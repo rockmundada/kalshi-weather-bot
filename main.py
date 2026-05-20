@@ -1700,9 +1700,10 @@ if __name__ == "__main__":
     parser.add_argument("--tomorrow", action="store_true", help="Analyze tomorrow only")
     parser.add_argument("--both", action="store_true", help="Analyze today and tomorrow")
     parser.add_argument("--trade", action="store_true", help="Execute trades (live)")
-    parser.add_argument("--profile", choices=["llm_first", "margin_of_safety", "safe", "aggressive"],
-                        default="llm_first",
-                        help="Trading profile: 'llm_first' (default) = no gates, LLM decides everything; "
+    parser.add_argument("--profile", choices=["conservative", "llm_first", "margin_of_safety", "safe", "aggressive"],
+                        default="conservative",
+                        help="Trading profile: 'conservative' (default) = BUY NO only, edge cap 20¢, data-driven; "
+                             "'llm_first' = no gates, LLM decides everything; "
                              "'margin_of_safety' = high win-rate, proof-backed, Benjamin Graham approach; "
                              "'safe' = threshold-preferred, NWS-aligned; "
                              "'aggressive' = original loose settings")

@@ -248,7 +248,7 @@ for _k in MODEL_WEIGHTS:
 # === TRADING PROFILES ===
 # "safe" = threshold-preferred, NWS-aligned, conservative sizing
 # "aggressive" = original loose settings (bracket bets, higher risk)
-TRADING_PROFILE_DEFAULT = "llm_first"
+TRADING_PROFILE_DEFAULT = "conservative"
 
 SAFE_TRADING_OVERRIDES = {
     "min_edge_cents": 5.0,           # require bigger edge
@@ -358,7 +358,110 @@ LLM_FIRST_TRUST_GATES_OVERRIDES = {
 }
 
 
-def apply_trading_profile(profile: str = "llm_first"):
+# === CONSERVATIVE PROFILE (DATA-DRIVEN) ===
+#
+# Based on analysis of Rock's full Kalshi history (20 settled markets,
+# 339 bot-evaluated trades, and known model failure modes).
+#
+# ROOT CAUSES OF LOSSES:
+#   1. Buying YES on multiple adjacent brackets (mathematically guaranteed
+#      to lose — you win 1 bracket but pay for 2-3).
+#   2. BUY YES on narrow 2°F brackets has only ~25% hit rate because
+#      NWS forecast error (~2°F) means landing in ANY specific 2°F
+#      window is a coin flip.
+#   3. Night-before trades have max uncertainty (3-5°F). Same-day
+#      afternoon trades had much better outcomes.
+#   4. When model and market disagree by >20¢, the market was usually
+#      right (12.5% win rate on high-edge trades).
+#
+# WHERE EDGE ACTUALLY EXISTS:
+#   - BUY NO on narrow brackets (fading the crowd) → 61.3% win rate
+#   - BUY YES on threshold contracts when outcome is nearly locked
+#     (e.g., ≥85°F when it's already 91°F) → Philly >44° was a win
+#   - Late-day trades (2-4 PM) when high is observed → Chicago 16-17°
+#   - Rain contracts → 62.5% win rate (small sample)
+#   - When 3+ data sources converge → highest win rate
+#
+CONSERVATIVE_TRADING_OVERRIDES = {
+    # --- SIDE RULES (from 339-trade analysis + settlement history) ---
+    "block_yes_on_brackets": True,     # NEVER buy YES on narrow 2°F brackets
+    "allow_yes_on_thresholds": True,   # Allow YES on threshold (≥X°, ≤X°) — safer
+    "allow_no_on_everything": True,    # BUY NO always allowed (61.3% historical win rate)
+    #
+    # --- EDGE CAP (trades >20¢ edge had 12.5% win rate) ---
+    "max_edge_cents": 20.0,           # Market is usually right when disagreement is large
+    #
+    # --- ONE BET PER EVENT (the multi-bracket killer) ---
+    "dedupe_by_event": True,          # CRITICAL: only 1 bet per city/date event
+    #
+    # --- EDGE THRESHOLDS ---
+    "min_edge_cents": 3.0,            # Need real edge, not noise
+    "min_edge_after_fees_cents": 2.0, # Must survive Kalshi fees
+    "min_edge_percent": 3.0,          # Minimum 3% edge
+    #
+    # --- CONFIDENCE ---
+    "min_fair_prob_to_recommend_buy": 0.55,  # 55%+ confident on our side
+    "max_fair_prob_hold_threshold": 0.40,    # Below 40% = no edge
+    #
+    # --- PRICE GUARDS ---
+    "max_contract_price": 85,         # Don't overpay. Room for profit, not "sure things."
+    "min_contract_price": 5,          # Avoid penny traps, but allow cheap NO bets
+    "max_spread_cents": 25,           # Weather markets are thin — allow reasonable spreads
+    #
+    # --- POSITION SIZING ---
+    "kelly_fraction": 0.20,           # Fifth-Kelly. Conservative. Survive bad weeks.
+    "max_position_per_contract": 20,  # Max 20 contracts per position (~$10-16 risk)
+    #
+    # --- TIMING ---
+    # Late-day trades are better because observation data exists.
+    # Bot will flag early trades as higher risk but not hard-block them.
+    "preferred_max_hours_remaining": 6,  # Prefer <6h remaining
+    #
+    # --- DATA QUALITY REQUIREMENTS ---
+    "min_source_agreement": 2,        # At least 2 data sources must agree with trade direction
+    "max_uncertainty_f": 5.0,         # Block when uncertainty > 5°F (tomorrow forecasts)
+    "max_model_spread_f": 6.0,        # Block when ensemble models spread > 6°F
+    "forecast_bias_no_trade_f": 5.0,  # Block if today's forecast was off by > 5°F
+    "ghost_gap_no_trade_f": 8.0,      # Block on large observation vs forecast gaps
+    #
+    # --- BRACKET FADING (KevinLuWX Reddit strategy) ---
+    # Day-before brackets priced >45¢ are systematically overpriced.
+    # NWS has ~2°F MAE. No 2°F bracket deserves >45% confidence 24h out.
+    "overpriced_bracket_fade_threshold": 45,
+    #
+    # --- NARROW BRACKET PENALTY ---
+    # Narrow brackets (2°F) need MORE edge to trade because they're
+    # inherently harder to hit. Threshold contracts are more forgiving.
+    "bracket_min_edge_cents": 5.0,    # Brackets need 5¢+ edge (vs 3¢ for thresholds)
+    #
+    # --- LIQUIDITY ---
+    "min_volume": 0,                  # Weather markets are thin
+    "min_open_interest": 0,           # Allow zero OI
+    "min_side_book_size": 0,          # We post maker orders
+    #
+    # --- DEFENSIVE SETTINGS ---
+    "max_trusted_edge_pct": 100.0,    # Cap displayed edge percentage
+    "require_subtitle_parse": False,  # Allow numeric strike fallback
+    "order_type": "maker_only",       # Always maker orders (better fills)
+    #
+    "_active_profile": "conservative",
+}
+
+CONSERVATIVE_TRUST_GATES_OVERRIDES = {
+    "penny_trap_max_price_cents": 5,          # Block asks ≤5¢ (penny traps)
+    "require_nws_daily_consistency": True,     # NWS forecast must support trade direction
+    "require_edge_exceeds_mae": False,         # Don't require MAE margin (too restrictive)
+    "min_edge_after_fees_cents": 2.0,
+    "min_fair_prob_to_recommend_buy": 0.55,
+    "max_spread_cents": 25,
+    "min_forecast_buffer_f": 1.5,             # Need 1.5°F margin from bracket boundary
+    "trust_score_min_for_llm_override": 80,   # LLM needs very high trust to override rules
+    "calibration_warn_mae_f": 3.0,            # Warn if forecast MAE > 3°F
+    "calibration_warn_brier": 0.25,
+}
+
+
+def apply_trading_profile(profile: str = "conservative"):
     """Apply a trading profile by merging overrides into TRADING and TRUST_GATES."""
     if profile == "safe":
         TRADING.update(SAFE_TRADING_OVERRIDES)
@@ -372,6 +475,9 @@ def apply_trading_profile(profile: str = "llm_first"):
     elif profile == "llm_first":
         TRADING.update(LLM_FIRST_TRADING_OVERRIDES)
         TRUST_GATES.update(LLM_FIRST_TRUST_GATES_OVERRIDES)
+    elif profile == "conservative":
+        TRADING.update(CONSERVATIVE_TRADING_OVERRIDES)
+        TRUST_GATES.update(CONSERVATIVE_TRUST_GATES_OVERRIDES)
     # else: no overrides (use raw config)
 
 

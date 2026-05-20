@@ -1016,7 +1016,7 @@ def _enrich_edge_agent(o: dict, weather_data: dict) -> None:
     if (fade_threshold and is_tomorrow
             and contract_type == "bracket"
             and bracket_width is not None and bracket_width <= 2.0
-            and side == "no"):
+            and o.get("side") == "no"):
         yes_ask = o.get("yes_ask_cents") or o.get("market_price", 0)
         if yes_ask >= fade_threshold:
             o["overpriced_bracket_fade"] = True
@@ -1026,14 +1026,26 @@ def _enrich_edge_agent(o: dict, weather_data: dict) -> None:
             )
             log.info(f"  🎯 Bracket fader triggered: {o.get('contract_ticker')} YES@{yes_ask}¢ → fade NO")
 
-    # Uncertainty / spread: add as risk warnings but don't block
+    # Uncertainty / spread: block in conservative mode, warn in llm_first
     if o.get("market_type") == "high_temp" and not weather_data.get("locked_high"):
         unc = o.get("uncertainty_f")
         if max_uncertainty and isinstance(unc, (int, float)) and unc > max_uncertainty:
-            risks.append(f"High uncertainty ±{unc:.1f}°F")
+            if llm_first:
+                risks.append(f"High uncertainty ±{unc:.1f}°F")
+            else:
+                o["signal"] = f"NO TRADE - uncertainty ±{unc:.1f}°F > {max_uncertainty:.0f}°F limit"
+                o["confidence"] = "Low"
+                o["why"] = [f"Forecast uncertainty ±{unc:.1f}°F exceeds {max_uncertainty:.0f}°F limit.", "Too uncertain to trade reliably."]
+                return
         spread = weather_data.get("model_spread_f")
         if max_model_spread and isinstance(spread, (int, float)) and spread > max_model_spread:
-            risks.append(f"Model spread {spread:.1f}°F (models disagree)")
+            if llm_first:
+                risks.append(f"Model spread {spread:.1f}°F (models disagree)")
+            else:
+                o["signal"] = f"NO TRADE - model spread {spread:.1f}°F > {max_model_spread:.0f}°F limit"
+                o["confidence"] = "Low"
+                o["why"] = [f"Ensemble model spread {spread:.1f}°F exceeds {max_model_spread:.0f}°F limit.", "Models disagree too much to trade reliably."]
+                return
 
     # Same-day pre-CLI trading: allow with risk warnings instead of blocking
     if is_today_contract and o.get("market_type") in ("high_temp", "daily_rain"):
@@ -1071,6 +1083,63 @@ def _enrich_edge_agent(o: dict, weather_data: dict) -> None:
         o["confidence"] = "Low"
         o["why"] = ["No edge after risks.", "Fair value too close to market."]
         return
+
+    # ── CONSERVATIVE: CLASSIFY CONTRACT TYPE ──
+    from analysis.trust_gate import classify_contract_type, get_bracket_width
+    contract_type = o.get("contract_type") or classify_contract_type(o)
+    bracket_width = o.get("bracket_width") or get_bracket_width(o)
+    o["contract_type"] = contract_type
+    o["bracket_width"] = bracket_width
+    is_narrow_bracket = (contract_type == "bracket" and bracket_width is not None and bracket_width <= 2.0)
+    is_threshold = (contract_type == "threshold")
+
+    # ── RULE 1: BLOCK BUY YES ON NARROW BRACKETS ──
+    # Root cause: BUY YES on 2°F brackets had 24.6% win rate.
+    # A 2°F bracket only has ~25-35% base probability. The model
+    # systematically overestimates these. Rock's trade history shows
+    # buying YES on multiple adjacent brackets guaranteed losses.
+    # BUT: Allow BUY YES on threshold contracts (≥X° or ≤X°) because
+    # those are inherently safer — Philly >44° was a clear win.
+    if TRADING.get("block_yes_on_brackets") and side == "yes" and is_narrow_bracket:
+        o["signal"] = "NO TRADE - BUY YES on narrow bracket blocked"
+        o["confidence"] = "Low"
+        o["why"] = [
+            f"BUY YES on narrow {bracket_width:.0f}°F bracket is disabled.",
+            "Historical: 24.6% win rate on BUY YES trades.",
+            "NWS forecast error (~2°F) means the temp rarely lands in a specific 2°F window.",
+            "Use BUY NO to fade overpriced brackets, or BUY YES on thresholds (≥X°, ≤X°).",
+        ]
+        return
+
+    # ── RULE 2: EDGE CAP ──
+    # Trades with 20-30¢ perceived edge had 12.5% win rate.
+    # When model and market disagree by a lot, the market is usually right.
+    # Professional weather traders have access to the same NWS data.
+    max_edge = TRADING.get("max_edge_cents")
+    if max_edge and abs(o.get("edge_cents", 0)) > max_edge:
+        o["signal"] = f"NO TRADE - edge {abs(o.get('edge_cents', 0)):.0f}¢ > {max_edge:.0f}¢ cap"
+        o["confidence"] = "Low"
+        o["why"] = [
+            f"Perceived edge {abs(o.get('edge_cents', 0)):.0f}¢ exceeds {max_edge:.0f}¢ safety cap.",
+            "When model and market disagree by >20¢, market was right 87.5% of the time.",
+            "Large edge usually means the model is wrong, not that the market is mispriced.",
+        ]
+        return
+
+    # ── RULE 3: NARROW BRACKETS NEED MORE EDGE ──
+    # A threshold contract (≥85°F) is forgiving — you're right even if
+    # temp is 87° or 92°. A bracket (85-86°F) requires precision.
+    # Brackets need at least 5¢ edge to compensate for the extra risk.
+    bracket_min_edge = TRADING.get("bracket_min_edge_cents")
+    if bracket_min_edge and is_narrow_bracket:
+        if abs(o.get("edge_cents", 0)) < bracket_min_edge:
+            o["signal"] = f"NO TRADE - bracket edge {abs(o.get('edge_cents', 0)):.1f}¢ < {bracket_min_edge:.0f}¢ minimum"
+            o["confidence"] = "Low"
+            o["why"] = [
+                f"Narrow {bracket_width:.0f}°F bracket needs ≥{bracket_min_edge:.0f}¢ edge (got {abs(o.get('edge_cents', 0)):.1f}¢).",
+                "Thresholds (≥X° or ≤X°) only need 3¢ edge — they're more forgiving.",
+            ]
+            return
 
     # ── TEMPERATURE AMBIGUITY WARNING ──
     # If the observed max came from a basic METAR (no T-group), the F→C→F
