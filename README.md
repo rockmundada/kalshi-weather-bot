@@ -2,9 +2,13 @@
 
 Automated trading system for weather derivative contracts on [Kalshi](https://kalshi.com), built to identify mispriced contracts by comparing real-time meteorological data against market-implied probabilities.
 
+**[View the Live Performance Dashboard](dashboard/)**
+
 ## What It Does
 
-The bot ingests weather data from 5 sources, builds probability distributions for temperature and precipitation outcomes across multiple US cities, and identifies contracts where the market price diverges significantly from the model's fair value. When edge exceeds configurable thresholds, it sizes positions using Kelly criterion and executes trades via Kalshi's API.
+The bot ingests weather data from 5 sources, builds probability distributions for temperature and precipitation outcomes across 7 US cities, and identifies contracts where the market price diverges significantly from the model's fair value. When edge exceeds configurable thresholds, it sizes positions using Kelly criterion and executes trades via Kalshi's API.
+
+After deployment, I built a **post-deployment performance analytics dashboard** to evaluate where the model had real edge and where it broke down — analyzing 1,360+ contract evaluations and 339 executed trades against verified historical weather outcomes.
 
 ## Architecture
 
@@ -50,9 +54,42 @@ rules_catalog.py       # Market-specific trading rules
 - Daily rainfall (yes/no)
 - Monthly cumulative precipitation
 
+## Performance Analytics Dashboard
+
+After running the bot, I conducted a full post-deployment analysis to understand model performance. The `dashboard/` folder contains:
+
+- **Interactive Streamlit dashboard** with 8 charts (calibration curve, P&L waterfall, city heatmap, edge analysis, signal funnel, and more)
+- **Data enrichment pipeline** that pulls verified weather outcomes from Iowa Mesonet (ASOS/METAR) and matches them against predictions
+- **10 documented SQL queries** for accuracy, calibration, edge, and P&L analysis
+- **One-page insight memo** with findings and recommendations
+
+### Key Findings
+
+| Metric | Value |
+|--------|-------|
+| Contracts Evaluated | 1,360+ |
+| Trades Executed | 339 |
+| Win Rate | 48.1% |
+| Net P&L | -$4.61 (near break-even) |
+
+- **BUY NO signals won 61.3%** vs BUY YES at only 24.6% — a structural model bias suggesting the probability model overestimates narrow temperature outcomes
+- **Calibration was poor in the 20-80% range** but accurate at extremes — the model needs nonlinear recalibration
+- **Larger perceived edge correlated with worse outcomes** — trades with 20-30 cent edge had only 12.5% win rate, while small-edge trades won 65.7%
+- **Forecast error varied by city** — LA was near-perfect (-0.1 deg F), Denver was off by -2.7 deg F
+
+Full analysis: [dashboard/INSIGHT_MEMO.md](dashboard/INSIGHT_MEMO.md)
+
+### Run the Dashboard
+
+```bash
+cd dashboard
+pip install streamlit plotly pandas
+streamlit run app.py
+```
+
 ## Built With
 
-Python 3.12 · Kalshi API · NWS API · AWC METAR · Claude API · OpenAI API · Telegram Bot API
+Python 3.12 · SQLite · Pandas · Plotly · Streamlit · Kalshi API · NWS API · AWC METAR · Iowa Mesonet · Claude API · OpenAI API · Telegram Bot API
 
 ## Setup
 
