@@ -14,14 +14,26 @@ st.set_page_config(
 )
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "kalshi_analytics.db")
+CSV_PATH = os.path.join(os.path.dirname(__file__), "enriched_predictions.csv")
 
 
 @st.cache_data(ttl=300)  # refresh every 5 minutes
 def load_data():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("SELECT * FROM predictions", conn)
-    weather = pd.read_sql("SELECT * FROM actual_weather", conn)
-    conn.close()
+    # Try SQLite first (local dev); fall back to CSV (Streamlit Cloud)
+    if os.path.exists(DB_PATH):
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql("SELECT * FROM predictions", conn)
+        try:
+            weather = pd.read_sql("SELECT * FROM actual_weather", conn)
+        except Exception:
+            weather = pd.DataFrame()
+        conn.close()
+    elif os.path.exists(CSV_PATH):
+        df = pd.read_csv(CSV_PATH)
+        weather = pd.DataFrame()
+    else:
+        st.error("No data found. Run enrich_predictions.py first.")
+        st.stop()
 
     for col in ["fair_prob", "market_price", "edge_cents", "kelly_fraction",
                  "forecast_high_f", "actual_high_f", "hours_remaining",
@@ -29,8 +41,8 @@ def load_data():
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["pnl_cents"] = pd.to_numeric(df["pnl_cents"], errors="coerce")
     df["limit_price_cents"] = pd.to_numeric(df["limit_price_cents"], errors="coerce")
-    df["is_actionable"] = df["is_actionable"] == "1"
-    df["prediction_correct"] = df["prediction_correct"] == "1"
+    df["is_actionable"] = df["is_actionable"].astype(str).isin(["1", "True", "true"])
+    df["prediction_correct"] = df["prediction_correct"].astype(str).isin(["1", "True", "true"])
 
     return df, weather
 
