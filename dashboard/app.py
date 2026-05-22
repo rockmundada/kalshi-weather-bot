@@ -16,7 +16,7 @@ st.set_page_config(
 DB_PATH = os.path.join(os.path.dirname(__file__), "kalshi_analytics.db")
 
 
-@st.cache_data
+@st.cache_data(ttl=300)  # refresh every 5 minutes
 def load_data():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql("SELECT * FROM predictions", conn)
@@ -42,9 +42,12 @@ trades = df[df["is_actionable"] & df["pnl_cents"].notna()].copy()
 # HEADER
 # ===========================================================================
 st.title("Kalshi Weather Bot — Performance Analytics")
+_dates = sorted(df["contract_date"].dropna().unique())
+_date_range = f"{_dates[0]} to {_dates[-1]}" if len(_dates) > 1 else (_dates[0] if _dates else "N/A")
+_n_cities = df["city"].nunique()
 st.markdown(
-    "Post-deployment analysis of **1,360 contract evaluations** and "
-    f"**{len(trades)} executed trades** across 7 cities on Feb 10–11, 2026."
+    f"Post-deployment analysis of **{len(df):,} contract evaluations** and "
+    f"**{len(trades)} executed trades** across {_n_cities} cities ({_date_range})."
 )
 
 # ===========================================================================
@@ -237,7 +240,7 @@ with col5:
 
 with col6:
     st.subheader("Signal Funnel")
-    st.caption("How the bot filtered 1,360 contract evaluations")
+    st.caption(f"How the bot filtered {len(df):,} contract evaluations")
 
     def categorize(sig):
         if sig.startswith("BUY"):
@@ -376,7 +379,7 @@ with st.expander("📋 View All Trades (raw data)"):
 # ===========================================================================
 st.divider()
 st.caption(
-    "Data: 1,360 contract evaluations from an automated Kalshi weather derivatives trading bot. "
-    "Actual weather outcomes sourced from Iowa Environmental Mesonet (ASOS/METAR). "
-    "Analysis covers Feb 10–11, 2026 across NYC, Chicago, Miami, Austin, Denver, LA, Philadelphia."
+    f"Data: {len(df):,} contract evaluations from an automated Kalshi weather derivatives trading bot. "
+    f"Actual weather outcomes sourced from Iowa Environmental Mesonet (ASOS/METAR). "
+    f"Analysis covers {_date_range} across {', '.join(sorted(df['city'].unique()))}."
 )
