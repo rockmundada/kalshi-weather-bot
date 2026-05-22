@@ -1,14 +1,14 @@
 # Performance Analysis Memo: Kalshi Weather Derivatives Trading Bot
 
 **Author:** Rock Mundada  
-**Date:** February 2026  
-**Dataset:** 1,360 contract evaluations | 339 executed trades | 7 cities | Feb 10-11, 2026
+**Date:** May 2026  
+**Dataset:** 1,718 contract evaluations | 339 executed trades | 7 cities | Feb 10-11 + May 20, 2026
 
 ---
 
 ## Executive Summary
 
-After deploying an automated weather derivatives trading bot on Kalshi, I conducted a post-deployment performance analysis to evaluate model accuracy, calibration quality, and risk factors. The bot evaluated 1,360 contracts across 7 U.S. cities and generated 339 actionable trade signals, resulting in a net P&L of -$4.61 (essentially break-even at -1.4 cents per trade). While the system demonstrated strong filtering discipline and pockets of real edge, the analysis revealed critical asymmetries and calibration gaps that would need to be addressed before scaling.
+After deploying an automated weather derivatives trading bot on Kalshi, I conducted a post-deployment performance analysis to evaluate model accuracy, calibration quality, and risk factors. The bot evaluated 1,718 contracts across 7 U.S. cities and generated 339 actionable trade signals, resulting in a net P&L of -$4.61 (essentially break-even at -1.4 cents per trade). While the system demonstrated strong filtering discipline and pockets of real edge, the analysis revealed critical asymmetries and calibration gaps that would need to be addressed before scaling.
 
 ---
 
@@ -66,7 +66,7 @@ The 16 rain contract trades had a 62.5% win rate and generated +$5.35 — the be
 
 5. **Expand the rain model** — it showed the strongest risk-adjusted performance and may represent a less efficient market segment.
 
-6. **Collect more data.** Two days of trading is enough to identify structural issues but not enough to validate fixes with statistical confidence. A minimum of 30-60 days of live data would be needed before drawing production-grade conclusions.
+6. **Collect more data.** Three days of trading across 20 settled markets is enough to identify structural issues but not enough to validate fixes with statistical confidence. A minimum of 30-60 days of live data would be needed before drawing production-grade conclusions. Currently running daily dry runs under the conservative profile to expand the dataset.
 
 ---
 

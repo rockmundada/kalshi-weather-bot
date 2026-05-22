@@ -6,9 +6,19 @@ Automated trading system for weather derivative contracts on [Kalshi](https://ka
 
 ---
 
+## Why I Built This
+
+I found Kalshi in college — the only CFTC-regulated event contract exchange in the US. Weather markets caught my eye because unlike politics or stocks, weather is governed by physics. Government forecasts have known error rates. Stations report temperatures every 5 minutes. It felt like a math problem, not a gambling problem.
+
+The idea: Kalshi lists contracts like "Will NYC's high be 74-75°F tomorrow?" If I can estimate the true probability better than the market price implies, I have edge.
+
+Simple in theory. I was very wrong about how simple it would be in practice.
+
+---
+
 ## Results
 
-After 1,718 contract evaluations and 339 executed trades across 20 settled markets, I analyzed every outcome against verified weather data and found:
+After 1,718 contract evaluations and 339 executed trades across 3 trading days (Feb 10-11 + May 20, 2026), I analyzed every outcome against verified weather data from Iowa Environmental Mesonet and found:
 
 | Finding | Detail |
 |---------|--------|
@@ -80,6 +90,16 @@ alerts/
 └── telegram.py         # Trade alerts
 ```
 
+## How the Strategy Evolved
+
+The first version let Claude AI make all trade decisions with no statistical gates ("llm_first" profile). It evaluated 1,718 contracts, traded 339, and lost $4.61. Not a disaster — but the post-mortem revealed the model was overconfident in ways I hadn't anticipated:
+
+1. **BUY YES on narrow 2°F brackets had a 24.6% win rate** — the model kept buying contracts like "74-75°F" when NWS forecasts already have ~2°F error
+2. **Large edge was a contra-indicator** — trades where my model disagreed with the market by 20-30¢ won only 12.5% of the time. The market (set by professional weather traders) was almost always right.
+3. **Buying adjacent brackets was a guaranteed loss** — buying YES on both 74-75°F and 76-77°F means paying for two contracts when at most one can pay out
+
+The lesson: removing all gates and trusting the AI to "figure it out" is a bad strategy. The data told me exactly which rules to add back — and those rules are now the conservative profile.
+
 ## Trading Profiles
 
 | Profile | Description |
@@ -114,6 +134,14 @@ python dashboard/enrich_predictions.py
 # Launch dashboard locally
 streamlit run dashboard/app.py
 ```
+
+## Data Limitations
+
+Results are based on 3 trading days (Feb 10-11 + May 20, 2026). That's enough to identify structural patterns (BUY NO consistently outperforming, large edge being a contra-indicator) but not enough for statistical significance. Currently running daily dry runs under the conservative profile to expand the dataset before going live with real money.
+
+## Development
+
+Built with Claude Code (Anthropic's AI coding tool). The AI helped write code faster, debug API integrations, and build the dashboard — but the trading strategy came from analyzing my own data. Claude didn't decide to cap edge at 20¢ or block YES on narrow brackets. The 339 trades told me to.
 
 ## Built With
 
