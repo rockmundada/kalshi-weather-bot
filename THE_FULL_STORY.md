@@ -14,6 +14,16 @@ Simple in theory. I was very wrong about how simple it would be in practice.
 
 ---
 
+## The manual phase
+
+Before I built anything, I traded manually. In January 2026, Dallas had a snowstorm forecast — 2+ inches over the weekend. The Kalshi contract looked underpriced, so I bet about $500 on it. The snow came. I doubled to $1,000.
+
+Then I got overconfident. That night I spread the money across temperature contracts in multiple cities based on what looked like obvious mispricings. While I slept, weather shifted overnight. I lost most of it.
+
+That was the moment I realized I needed a system instead of gut calls. And that's when I started building.
+
+---
+
 ## The first version: just get it working
 
 I started building in Python. The first challenge was just getting data. There's no single "weather API" that gives you what you need for Kalshi. You need:
@@ -22,7 +32,13 @@ I started building in Python. The first challenge was just getting data. There's
 - **What's been observed so far today** — METAR reports from airports, but the raw temperature in a METAR is rounded to whole degrees Celsius, and there's a hidden "T-group" in the remarks section with 0.1°C precision that most people don't parse
 - **What the settlement source actually is** — this took me weeks to figure out. Kalshi doesn't settle on METAR data. They settle on the NWS CLI (Climate Data) product, which is a post-midnight summary. The CLI rounds differently than raw METAR. If you don't know this, you'll be right about the temperature and still lose the bet.
 
-I got the Kalshi API working first. Then the NWS API. Then I realized the NWS API forecasts sometimes disagreed with what the NWS website showed, so I added website scraping to cross-validate. Then I added METAR parsing. Then I learned about T-groups and added precision temperature extraction. Then I added the Open-Meteo ensemble API to blend 4 global weather models (GFS, ECMWF, ICON, GEM) using inverse-MAE weighting.
+I got the Kalshi API working first. Then the NWS API. Then I realized the NWS API forecasts sometimes disagreed with what the NWS website showed, so I added website scraping to cross-validate. Then I added METAR parsing. Then I learned about T-groups and added precision temperature extraction.
+
+The T-group discovery came from a real trade. On January 29, all three data sources (API, T-group, proxy station) agreed at 16°F for Chicago. I bought YES on the 16-17°F bracket at 75 cents. During the afternoon, the API display jumped to 18°F. Everyone panic-sold — my position crashed from 60 cents to 14 cents. But the T-group (the precise 0.1°C measurement in the METAR remarks) still showed 17°F. I held. The CLI report confirmed 17°F that night. The contract settled at $1. I won.
+
+That single trade proved the entire data trust hierarchy: CLI > T-group > synoptic 6-hour max > API display. The API rounds and converts (F→C→F), introducing up to 1°F of error. The T-group is what the CLI actually uses. Most retail traders don't parse it.
+
+Then I added the Open-Meteo ensemble API to blend 4 global weather models (GFS, ECMWF, ICON, GEM) using inverse-MAE weighting.
 
 By the time the data pipeline was "done" I had 5 API integrations and the codebase was already several thousand lines.
 
@@ -40,9 +56,25 @@ It was an interesting approach. It was also not profitable.
 
 ---
 
+## The gate-removal mistake
+
+Before the first live run, the bot had about 15 safety gates that each independently blocked trades: "CLI not final" blocked all same-day trades, "model spread too wide" blocked cities where forecasts disagreed by more than 6°F, "same-day max hours remaining" only allowed trading in the last 2 hours, minimum book size requirements blocked thin markets, and so on.
+
+The problem was that every single trade got blocked by at least one gate. The bot evaluated hundreds of contracts and recommended zero.
+
+So I told Claude Code to remove everything. Convert all hard blocks to soft warnings. Set all minimums to zero. Open it up.
+
+It worked — the bot started producing dozens of BUY recommendations. But many were the kind of "too good to be true" signals that should have stayed blocked: 2-cent contracts the model thought were worth 80 cents, brackets where the NWS forecast actually disagreed with the model's estimate, trades on contracts with zero liquidity.
+
+The lesson was immediate and expensive: removing governance controls increased volume but killed reliability. This became one of the most important things I learned from the entire project — it's the same principle behind model risk management at a bank. You don't remove the controls just because they're annoying. You figure out which controls are wrong and fix those specifically.
+
+The conservative profile I built later was the direct response to this mistake. Every rule in it traces back to a specific failure.
+
+---
+
 ## First real data: February 10-11, 2026
 
-I ran the bot live for the first time on February 10-11 across 7 cities. It evaluated 1,360 contracts and generated 339 actionable trade signals. I logged every single one — the signal, the market price, the fair probability, the edge, the Kelly sizing, everything.
+I ran the bot live for the first time on February 10-11 across 7 cities. It evaluated 1,360 contracts across those two days (now 1,718 including continued dry runs through May 2026) and generated 339 actionable trade signals. I logged every single one — the signal, the market price, the fair probability, the edge, the Kelly sizing, everything.
 
 Then the markets settled.
 
@@ -134,6 +166,8 @@ Based on all of this, I designed a new trading strategy from the ground up. Not 
 
 I implemented this as a "conservative" trading profile in the config. The bot now supports 5 profiles — conservative, aggressive, margin_of_safety, safe, and llm_first — and defaults to conservative.
 
+The best example of the new approach working: Denver, February 9. Every data source agreed — NWS forecast 70°F, all four ensemble models clustered 67-70°F, current METAR at 70°F, and the day was nearly over. The market was pricing "above 71°F" at 41% probability. I bought NO at 59 cents. The CLI confirmed 70°F. I won. It wasn't exciting — no 30x payout, no "hidden gem." Just a data-aligned, forgiving threshold bet where I had genuine edge. That's what the conservative profile is designed to find.
+
 The first dry run under the new rules (May 21, 2026) analyzed 86 contracts across 7 cities and correctly rejected all of them. Every rejection had a clear reason: edge too large (market pricing at 50 cents across the board = placeholder/illiquid pricing), BUY YES on bracket blocked, model spread too wide, etc. The bot is being selective. That's the point.
 
 ---
@@ -151,6 +185,8 @@ I could build a model that predicts NYC's high temperature within 2°F. Great. B
 
 The favorite-longshot bias is real. Contracts priced under 10 cents lose money systematically — they feel cheap but they almost never pay out. The maker-taker spread matters enormously — posting limit orders instead of taking asks improved expected returns by 22 percentage points according to the research.
 
+One specific loss: I had a trade where the time-series data showed 54°F all afternoon, so I bet on the 54-55°F bracket. But the CLI report said 53°F. The NWS uses "round half up asymmetric" rounding (per FMH-1 §2.6.3), and the actual precise measurement was just below 53.5°F, which rounds down. I was right about the temperature within 1°F and still lost the bet. After that I read the actual federal handbook and verified the rounding rules against three independent sources.
+
 And the most expensive lesson: when your model disagrees with the market by a lot, the market is usually right. Humility is a trading strategy.
 
 ---
@@ -165,13 +201,13 @@ This project taught me more than any class I took.
 
 **On the gap between theory and practice:** I could have read 10 research papers on Kelly criterion and weather forecasting and still not known that BUY YES on narrow brackets has a 24.6% win rate in my specific system. You have to run the thing, collect the data, and look at it honestly.
 
-**On shipping:** The bot is 9,900+ lines of Python. It integrates 5 APIs. It has a live dashboard with 10 interactive charts. It has an automated backtesting pipeline. It has a one-command script that runs the bot, enriches data, and pushes to GitHub. None of this was assigned. Nobody asked me to build it. I just wanted to see if I could make money trading weather.
+**On shipping:** The bot is 10,800+ lines of Python. It integrates 5 APIs. It has a live dashboard with 10 interactive charts. It has an automated backtesting pipeline. It has a one-command script that runs the bot, enriches data, and pushes to GitHub. None of this was assigned. Nobody asked me to build it. I just wanted to see if I could make money trading weather.
 
 ---
 
 ## Current state (May 2026)
 
-- 9,900+ lines of Python across ~20 files
+- 10,800+ lines of Python across ~20 files
 - 5 API integrations (Kalshi, NWS, Open-Meteo, Iowa Mesonet, Anthropic Claude)
 - 9 cities tracked, 3 market types
 - 1,718 contract evaluations logged

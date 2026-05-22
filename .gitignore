@@ -24,6 +24,9 @@ build/
 .env
 *.pem
 
+# Logs
+*.log
+
 # Data (large/generated files)
 *.db
 weather_cache.json

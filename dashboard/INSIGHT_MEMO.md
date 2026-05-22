@@ -66,7 +66,7 @@ The 16 rain contract trades had a 62.5% win rate and generated +$5.35 — the be
 
 5. **Expand the rain model** — it showed the strongest risk-adjusted performance and may represent a less efficient market segment.
 
-6. **Collect more data.** Three days of trading across 20 settled markets is enough to identify structural issues but not enough to validate fixes with statistical confidence. A minimum of 30-60 days of live data would be needed before drawing production-grade conclusions. Currently running daily dry runs under the conservative profile to expand the dataset.
+6. **Collect more data.** Three days of trading (20 contract events across 3 trading days) is enough to identify structural issues but not enough to validate fixes with statistical confidence. A minimum of 30-60 days of live data would be needed before drawing production-grade conclusions. Currently running daily dry runs under the conservative profile to expand the dataset.
 
 ---
 
