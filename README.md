@@ -2,7 +2,7 @@
 
 Automated trading system for weather derivative contracts on [Kalshi](https://kalshi.com). Ingests real-time data from 5 sources, builds probability estimates for temperature and precipitation outcomes across 9 US cities, and identifies mispriced contracts using statistical edge calculation and AI-assisted decision-making.
 
-**[Live Dashboard](https://rocksbot.streamlit.app)** | **[Insight Memo](INSIGHT_MEMO.md)**
+**[Live Dashboard](https://rocksbot.streamlit.app)** | **[The Full Story](THE_FULL_STORY.md)** | **[Insight Memo](INSIGHT_MEMO.md)**
 
 ---
 
