@@ -19,19 +19,27 @@ CSV_PATH = os.path.join(os.path.dirname(__file__), "enriched_predictions.csv")
 
 @st.cache_data(ttl=300)  # refresh every 5 minutes
 def load_data():
-    # Try SQLite first (local dev); fall back to CSV (Streamlit Cloud)
+    # Try SQLite first (local dev); fall back to CSV (Streamlit Cloud).
+    # The .db is in .gitignore so Streamlit Cloud only has the CSV.
+    df = None
+    weather = pd.DataFrame()
+
     if os.path.exists(DB_PATH):
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql("SELECT * FROM predictions", conn)
         try:
-            weather = pd.read_sql("SELECT * FROM actual_weather", conn)
+            conn = sqlite3.connect(DB_PATH)
+            df = pd.read_sql("SELECT * FROM predictions", conn)
+            try:
+                weather = pd.read_sql("SELECT * FROM actual_weather", conn)
+            except Exception:
+                pass
+            conn.close()
         except Exception:
-            weather = pd.DataFrame()
-        conn.close()
-    elif os.path.exists(CSV_PATH):
+            df = None  # DB exists but table missing — fall through to CSV
+
+    if df is None and os.path.exists(CSV_PATH):
         df = pd.read_csv(CSV_PATH)
-        weather = pd.DataFrame()
-    else:
+
+    if df is None:
         st.error("No data found. Run enrich_predictions.py first.")
         st.stop()
 
