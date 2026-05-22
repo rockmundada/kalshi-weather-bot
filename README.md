@@ -1,101 +1,120 @@
-# Kalshi Weather Contract Trading Bot
+# Kalshi Weather Trading Bot
 
-Automated trading system for weather derivative contracts on [Kalshi](https://kalshi.com), built to identify mispriced contracts by comparing real-time meteorological data against market-implied probabilities.
+Automated trading system for weather derivative contracts on [Kalshi](https://kalshi.com). Ingests real-time data from 5 sources, builds probability estimates for temperature and precipitation outcomes across 9 US cities, and identifies mispriced contracts using statistical edge calculation and AI-assisted decision-making.
 
-**[View the Live Performance Dashboard](dashboard/)**
+**[Live Dashboard](https://rocksbot.streamlit.app)** | **[Insight Memo](INSIGHT_MEMO.md)**
 
-## What It Does
+---
 
-The bot ingests weather data from 5 sources, builds probability distributions for temperature and precipitation outcomes across 7 US cities, and identifies contracts where the market price diverges significantly from the model's fair value. When edge exceeds configurable thresholds, it sizes positions using Kelly criterion and executes trades via Kalshi's API.
+## Results
 
-After deployment, I built a **post-deployment performance analytics dashboard** to evaluate where the model had real edge and where it broke down — analyzing 1,360+ contract evaluations and 339 executed trades against verified historical weather outcomes.
+After 1,718 contract evaluations and 339 executed trades across 20 settled markets, I analyzed every outcome against verified weather data and found:
+
+| Finding | Detail |
+|---------|--------|
+| BUY NO win rate | **61.3%** — fading overpriced brackets works |
+| BUY YES win rate | **24.6%** — model overestimates narrow 2°F brackets |
+| Large edge (>20¢) win rate | **12.5%** — market is usually right when disagreement is large |
+| Overall P&L | **-$4.61** — near break-even on first iteration |
+
+These findings led to a complete strategy redesign. Full analysis in the [Insight Memo](INSIGHT_MEMO.md) and on the [live dashboard](https://rocksbot.streamlit.app).
+
+## How It Works
+
+```
+Weather Data (5 sources)  →  Edge Calculation  →  Filter Rules  →  Trade / No Trade
+├── NWS API (forecasts)        ├── Fair probability      ├── Edge cap (20¢)
+├── METAR (observations)       ├── Market price           ├── Block YES on brackets
+├── ASOS 5-min (precision)     ├── Edge in cents          ├── Uncertainty limits
+├── Ensemble models (4x)       └── Kelly sizing           ├── Source agreement
+└── Claude AI (decisions)                                 └── One bet per event
+```
+
+**Data pipeline:** METAR observations with T-group precision parsing (0.1°C) → NWS gridpoint/daily/hourly forecasts with website cross-validation → 5-minute ASOS station data → ensemble blending of GFS, ECMWF, ICON, GEM models using inverse-MAE weighting → Claude AI holistic analysis.
+
+**Key technical detail:** Kalshi settles on the NWS CLI (Climate Data) product, not raw METAR. The CLI uses different rounding rules and measurement windows (DST-aware). Getting this wrong means you can predict the temperature correctly and still lose the bet.
+
+## Analytics Dashboard
+
+Live at **[rocksbot.streamlit.app](https://rocksbot.streamlit.app)** — 10 interactive visualizations built with Streamlit + Plotly + SQLite:
+
+- Accuracy & P&L by city
+- BUY YES vs BUY NO performance
+- Calibration curve (predicted vs actual probability)
+- Edge size vs win rate (larger edge ≠ better outcomes)
+- Forecast error by city
+- Signal funnel (1,718 evaluations → 339 trades)
+- P&L waterfall
+- Kelly fraction vs win rate
+- City × date heatmap
+- Full raw data table
 
 ## Architecture
 
 ```
-data_sources/          # Real-time weather data ingestion
-├── nws.py             # National Weather Service API (forecasts, alerts, 5-min obs)
-├── metar.py           # Aviation weather reports (METAR/TAF from AWC)
-├── iem.py             # Iowa Environmental Mesonet (CLI reports, historical)
-├── ensemble.py        # Ensemble model forecasts (spread analysis)
-└── wethr.py           # Wethr API (high/low forecasts, precip, NWS data)
+main.py                 # Orchestrator — data collection → analysis → execution
+config.py               # Configuration, 5 trading profiles, city configs
+run_bot.py              # CLI: --dry-run, --loop, --profile=conservative
 
-analysis/              # Signal generation and validation
-├── edge.py            # Probability distributions, edge calculation, Kelly sizing
-├── trust_gate.py      # Hard/soft gate filters for signal quality
-├── claude_ai.py       # Claude API integration for qualitative analysis
-├── openai_ai.py       # OpenAI API integration (alternative LLM)
-├── llm_ai.py          # LLM orchestration layer
-└── validation.py      # Calibration tracking, NWS bias computation
+analysis/
+├── edge.py             # Signal generation, edge calculation (~1,800 lines)
+├── trust_gate.py       # Hard/soft gate filters
+├── claude_ai.py        # Claude API integration
+├── llm_ai.py           # LLM prompt construction
+└── validation.py       # Calibration tracking
+
+data_sources/
+├── nws.py              # NWS API + tabular website scraping
+├── metar.py            # METAR/ASOS parsing with T-group extraction
+├── ensemble.py         # 4-model ensemble blending
+└── iem.py              # Iowa Mesonet (CLI reports)
 
 trading/
-└── kalshi_api.py      # Kalshi REST API client (RSA-PSS auth, order placement)
+└── kalshi_api.py       # Kalshi REST API (RSA-PSS auth)
+
+dashboard/
+├── app.py              # Streamlit dashboard (10 charts)
+└── enrich_predictions.py  # Auto-fetch actuals, compute P&L
 
 alerts/
-└── telegram.py        # Real-time trade alerts and daily summaries
-
-main.py                # Orchestrator — coordinates data, analysis, and execution
-config.py              # All configuration, thresholds, and API settings
-backtest.py            # Historical backtesting framework
-rules_catalog.py       # Market-specific trading rules
+└── telegram.py         # Trade alerts
 ```
 
-## Key Technical Details
+## Trading Profiles
 
-- **Probability modeling:** Builds temperature distributions using forecast point estimates + calibrated uncertainty bands, accounting for NWS forecast bias, time-of-day effects, and model spread
-- **Position sizing:** Full Kelly criterion implementation with configurable fractional Kelly and maximum position limits
-- **Trust gates:** Two-tier filtering system — hard gates (never override) and soft gates (LLM can override with justification) — to prevent trading on low-confidence signals
-- **Multi-model validation:** Cross-references NWS, METAR observations, ensemble spreads, and historical bias to reduce false signals
-- **1,300+ logged predictions** in `data/predictions.csv` for ongoing calibration analysis
+| Profile | Description |
+|---------|-------------|
+| **conservative** (default) | Data-driven rules from 339-trade analysis. Blocks YES on brackets, caps edge, requires source agreement. |
+| llm_first | All gates removed, Claude AI decides everything |
+| margin_of_safety | Benjamin Graham approach, 4+ source agreement, tenth-Kelly |
+| safe | Threshold-preferred, NWS-aligned |
+| aggressive | Original loose settings |
 
-## Markets Covered
+## Markets
 
-- Daily high temperature (threshold and bracket contracts)
-- Daily rainfall (yes/no)
-- Monthly cumulative precipitation
+- **Daily high temperature** — 9 cities (NYC, Chicago, Miami, Austin, Denver, LA, Philadelphia, Houston, Seattle)
+- **Daily rain** — yes/no precipitation
+- **Monthly rain** — cumulative precipitation thresholds
 
-## Performance Analytics Dashboard
-
-After running the bot, I conducted a full post-deployment analysis to understand model performance. The `dashboard/` folder contains:
-
-- **Interactive Streamlit dashboard** with 8 charts (calibration curve, P&L waterfall, city heatmap, edge analysis, signal funnel, and more)
-- **Data enrichment pipeline** that pulls verified weather outcomes from Iowa Mesonet (ASOS/METAR) and matches them against predictions
-- **10 documented SQL queries** for accuracy, calibration, edge, and P&L analysis
-- **One-page insight memo** with findings and recommendations
-
-### Key Findings
-
-| Metric | Value |
-|--------|-------|
-| Contracts Evaluated | 1,360+ |
-| Trades Executed | 339 |
-| Win Rate | 48.1% |
-| Net P&L | -$4.61 (near break-even) |
-
-- **BUY NO signals won 61.3%** vs BUY YES at only 24.6% — a structural model bias suggesting the probability model overestimates narrow temperature outcomes
-- **Calibration was poor in the 20-80% range** but accurate at extremes — the model needs nonlinear recalibration
-- **Larger perceived edge correlated with worse outcomes** — trades with 20-30 cent edge had only 12.5% win rate, while small-edge trades won 65.7%
-- **Forecast error varied by city** — LA was near-perfect (-0.1 deg F), Denver was off by -2.7 deg F
-
-Full analysis: [dashboard/INSIGHT_MEMO.md](dashboard/INSIGHT_MEMO.md)
-
-### Run the Dashboard
+## Setup
 
 ```bash
-cd dashboard
-pip install streamlit plotly pandas
-streamlit run app.py
+pip install -r requirements.txt
+
+# Set API keys (see config.py)
+export KALSHI_API_KEY="your_key"
+export ANTHROPIC_API_KEY="your_key"
+
+# Dry run (no real trades)
+python run_bot.py --dry-run --both
+
+# Enrich predictions with actual outcomes
+python dashboard/enrich_predictions.py
+
+# Launch dashboard locally
+streamlit run dashboard/app.py
 ```
 
 ## Built With
 
-Python 3.12 · SQLite · Pandas · Plotly · Streamlit · Kalshi API · NWS API · AWC METAR · Iowa Mesonet · Claude API · OpenAI API · Telegram Bot API
-
-## Setup
-
-1. Clone the repo
-2. `pip install -r requirements.txt`
-3. Set environment variables for API keys (see `config.py` for required variables)
-4. `python run_bot.py`
-
-> **Note:** API keys are not included. You'll need your own Kalshi, Anthropic, and OpenAI credentials.
+Python 3.12 · Kalshi API · NWS Weather API · Open-Meteo · Iowa Mesonet · Anthropic Claude · Streamlit · Plotly · SQLite · Pandas · Telegram Bot API
