@@ -175,15 +175,51 @@ class KalshiAPI:
                 # 2. Last trade price if available
                 # 3. yes_bid or yes_ask if only one exists
                 # 4. Default 50 only as last resort
-                yes_bid = mkt.get("yes_bid")
-                yes_ask = mkt.get("yes_ask")
-                no_bid = mkt.get("no_bid")
-                no_ask = mkt.get("no_ask")
-                yes_bid_size = mkt.get("yes_bid_size")
-                yes_ask_size = mkt.get("yes_ask_size")
-                no_bid_size = mkt.get("no_bid_size")
-                no_ask_size = mkt.get("no_ask_size")
-                last_price = mkt.get("last_price")
+                #
+                # Kalshi API v3 returns prices in dollars (e.g. 0.34 = 34¢)
+                # with field names like yes_bid_dollars, volume_fp, etc.
+                # Fall back to legacy cent-based fields for compatibility.
+                def _cents(mkt, legacy_key, dollar_key):
+                    """Read price in cents: prefer dollar field * 100, fall back to legacy."""
+                    dollar_val = mkt.get(dollar_key)
+                    if dollar_val is not None and dollar_val != 0:
+                        try:
+                            return round(float(dollar_val) * 100)
+                        except (ValueError, TypeError):
+                            pass
+                    legacy_val = mkt.get(legacy_key)
+                    if legacy_val is not None and legacy_val != 0:
+                        try:
+                            return int(legacy_val)
+                        except (ValueError, TypeError):
+                            pass
+                    return None
+
+                def _size(mkt, legacy_key, fp_key):
+                    """Read size: prefer _fp field, fall back to legacy."""
+                    fp_val = mkt.get(fp_key)
+                    if fp_val is not None and fp_val != 0:
+                        try:
+                            return round(float(fp_val))
+                        except (ValueError, TypeError):
+                            pass
+                    legacy_val = mkt.get(legacy_key)
+                    if legacy_val is not None:
+                        try:
+                            return int(legacy_val)
+                        except (ValueError, TypeError):
+                            pass
+                    return 0
+
+                yes_bid = _cents(mkt, "yes_bid", "yes_bid_dollars")
+                yes_ask = _cents(mkt, "yes_ask", "yes_ask_dollars")
+                no_bid = _cents(mkt, "no_bid", "no_bid_dollars")
+                no_ask = _cents(mkt, "no_ask", "no_ask_dollars")
+                yes_bid_size = _size(mkt, "yes_bid_size", "yes_bid_size_fp")
+                yes_ask_size = _size(mkt, "yes_ask_size", "yes_ask_size_fp")
+                no_bid_size = _size(mkt, "no_bid_size", "no_bid_size_fp")
+                no_ask_size = _size(mkt, "no_ask_size", "no_ask_size_fp")
+                last_price = _cents(mkt, "last_price", "last_price_dollars")
                 # To buy YES you pay the ask; if API omits yes_ask, use 100 - no_bid
                 if not yes_ask and no_bid is not None:
                     yes_ask = 100 - no_bid
@@ -230,8 +266,8 @@ class KalshiAPI:
                     "no_spread": no_spread,
                     "last_price": last_price or 0,
                     "no_price": 100 - best_yes_price,
-                    "volume": mkt.get("volume", 0),
-                    "open_interest": mkt.get("open_interest", 0),
+                    "volume": _size(mkt, "volume", "volume_fp"),
+                    "open_interest": _size(mkt, "open_interest", "open_interest_fp"),
                     "status": mkt.get("status", ""),
                     "close_time": mkt.get("close_time", ""),
                     "result": mkt.get("result", ""),
