@@ -294,12 +294,36 @@ YOUR TASK:
 4. Recommend trades ONLY for the listed candidate tickers.
 """
     else:
-        task_block = """YOUR TASK:
+        # Build filter context so Claude knows our rules
+        max_edge = TRADING.get("max_edge_cents", 20)
+        block_yes_brackets = TRADING.get("block_yes_narrow_brackets", False)
+        max_uncertainty = TRADING.get("hard_block_uncertainty_f", 5)
+        max_spread = TRADING.get("hard_block_model_spread_f", 6)
+        filter_context = f"""
+OUR TRADING RULES (from 339-trade analysis):
+- BUY YES on narrow 2°F brackets: BLOCKED (historical 24.6% win rate)
+- BUY YES on threshold contracts (e.g. "above 76°F"): ALLOWED
+- BUY NO: ALWAYS ALLOWED (historical 61.3% win rate)
+- Edge cap: {max_edge}¢ — trades with >20¢ edge historically won only 12.5%
+- Forecast uncertainty limit: {max_uncertainty}°F
+- Model spread limit: {max_spread}°F
+- One bet per city per day
+- Require 2+ data sources to agree
+
+You see ALL data and ALL contracts, including those our rules would block.
+Our rules are data-driven defaults. If you see a genuinely compelling trade
+that our rules would block, you MAY recommend it — but you must explain
+specifically why the data overrides the rule. Set confidence to "high" and
+include "OVERRIDE: <reason>" in your reasoning. Do not override casually."""
+
+        task_block = f"""YOUR TASK:
 1. Synthesize ALL data sources to estimate the most likely high temperature (to 0.1°F precision)
 2. Estimate probability of rain today and expected monthly total
 3. Assess forecast uncertainty (low/moderate/high) with reasoning
 4. For EACH contract, estimate fair probability and identify any edge vs market price
 5. Recommend specific trades: which contracts to buy YES or NO, and confidence level
+6. You know our rules below — respect them unless you have strong data-backed conviction otherwise
+{filter_context}
 """
 
     contract_date = weather_data.get("contract_date", "?")
@@ -955,11 +979,19 @@ def merge_analysis(statistical_edges: list[dict], claude_analysis: dict | None) 
         """Apply LLM override only when it aligns with positive, executable edge."""
         if not llm_first:
             if merged.get("hard_block"):
-                merged["combined_confidence"] = "low"
-                merged["final_side"] = merged.get("side", "none")
-                merged["final_edge_cents"] = merged.get("edge_cents", 0)
-                merged["override_reason"] = "LLM blocked by hard gate"
-                return
+                # Allow Claude to override hard blocks IF it explicitly says OVERRIDE
+                # with high confidence and a stated reason
+                reasoning = (ct.get("reasoning") or "")
+                conf = (ct.get("confidence") or "").lower()
+                if "OVERRIDE" in reasoning and conf == "high":
+                    log.info(f"Claude OVERRIDING hard block on {merged.get('contract_ticker')}: {reasoning[:100]}")
+                    merged["claude_override"] = True
+                else:
+                    merged["combined_confidence"] = "low"
+                    merged["final_side"] = merged.get("side", "none")
+                    merged["final_edge_cents"] = merged.get("edge_cents", 0)
+                    merged["override_reason"] = "LLM blocked by hard gate"
+                    return
             if not _llm_can_override_soft(merged, ct):
                 merged["combined_confidence"] = "low"
                 merged["final_side"] = merged.get("side", "none")
