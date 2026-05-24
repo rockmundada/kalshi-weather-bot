@@ -49,8 +49,8 @@ def load_data():
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["pnl_cents"] = pd.to_numeric(df["pnl_cents"], errors="coerce")
     df["limit_price_cents"] = pd.to_numeric(df["limit_price_cents"], errors="coerce")
-    df["is_actionable"] = df["is_actionable"].astype(str).isin(["1", "True", "true"])
-    df["prediction_correct"] = df["prediction_correct"].astype(str).isin(["1", "True", "true"])
+    df["is_actionable"] = pd.to_numeric(df["is_actionable"], errors="coerce").fillna(0).astype(bool)
+    df["prediction_correct"] = pd.to_numeric(df["prediction_correct"], errors="coerce").fillna(0).astype(bool)
 
     return df, weather
 
