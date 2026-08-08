@@ -289,7 +289,9 @@ AGGRESSIVE_TRUST_GATES_OVERRIDES = {
 
 # === MARGIN OF SAFETY PROFILE ===
 # Philosophy: Benjamin Graham / Buffett value investing for weather contracts.
-# High win rate (~90%), consistent ~30% returns, proof-backed, never go to zero.
+# DESIGN TARGETS, NOT MEASURED RESULTS — this profile aims for a high win rate
+# and positive returns. Measured performance across all profiles is 50.8% on 360
+# scored paper predictions, net negative. Nothing here has been validated.
 # Prefer threshold contracts (forgiving), late-day trades (low uncertainty),
 # and only bet when multiple data sources converge.
 MARGIN_OF_SAFETY_TRADING_OVERRIDES = {
