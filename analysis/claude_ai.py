@@ -1,5 +1,5 @@
 """
-Claude AI analysis using Opus 4.5 with extended thinking.
+Claude AI analysis using Opus 5 with adaptive thinking.
 Synthesizes all weather data sources into trading recommendations.
 """
 import json
@@ -14,8 +14,8 @@ except ImportError:
 
 from config import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_MAX_TOKENS,
-    CLAUDE_THINKING_BUDGET, CLAUDE_TIMEOUT_SECONDS, CLAUDE_MAX_RETRIES,
-    CLAUDE_MAX_TOKENS_COMPACT, CLAUDE_THINKING_BUDGET_COMPACT, CITIES, TRADING, TRUST_GATES,
+    CLAUDE_EFFORT, CLAUDE_THINKING_DISPLAY, CLAUDE_TIMEOUT_SECONDS, CLAUDE_MAX_RETRIES,
+    CLAUDE_MAX_TOKENS_COMPACT, CLAUDE_EFFORT_COMPACT, CITIES, TRADING, TRUST_GATES,
     LLM_MAX_EDGES_IN_PROMPT,
 )
 from rules_catalog import rule_summary_for_market_type
@@ -30,6 +30,29 @@ def _disable_claude(reason: str) -> None:
     if not _CLAUDE_DISABLED:
         _CLAUDE_DISABLED = True
         log.warning(f"Disabling Claude analysis for this run: {reason}")
+
+
+def _log_completion(response, thinking_text: str, result_text: str, scope: str = "") -> None:
+    """Log how the turn ended so truncation is distinguishable from a bad answer.
+
+    Without this, a response cut off by max_tokens and a genuinely malformed
+    one both surface as 'No JSON found', which hid months of truncated runs.
+    """
+    stop = getattr(response, "stop_reason", None)
+    usage = getattr(response, "usage", None)
+    out_tokens = getattr(usage, "output_tokens", "?") if usage else "?"
+    log.info(
+        f"Claude{scope}: stop_reason={stop} output_tokens={out_tokens} "
+        f"thinking={len(thinking_text)} chars answer={len(result_text)} chars"
+    )
+    if stop == "max_tokens":
+        log.error(
+            f"Claude{scope} hit the max_tokens ceiling — the answer is TRUNCATED, not wrong. "
+            f"Reasoning consumed the budget before the JSON finished. "
+            f"Raise CLAUDE_MAX_TOKENS or lower CLAUDE_EFFORT."
+        )
+    elif stop == "refusal":
+        log.error(f"Claude{scope} declined to answer (stop_reason=refusal); no trades this run.")
 
 
 def _extract_first_json(text: str) -> dict | None:
@@ -568,10 +591,13 @@ def build_global_prompt(analysis_bundle: list[dict],
                         f"floor={floor_s} cap={cap_s} vol={vol} oi={oi} {subtitle}".strip()
                     )
 
-        # Include computed edges with risk context (llm_first mode)
+        # Always give Claude the full statistical picture — fair value, computed
+        # edge, risk flags, source agreement — not just raw quotes. Under the
+        # conservative profile this used to be gated behind llm_first, which
+        # meant Claude had to re-derive everything from bid/ask alone.
         all_edges = item.get("all_edges", []) or []
         edge_context = []
-        if all_edges and llm_first:
+        if all_edges:
             edge_context.append("\n=== STATISTICAL ANALYSIS (all contracts) ===")
             for e in all_edges[:max_edges]:
                 ticker = e.get("contract_ticker", "?")
@@ -743,7 +769,7 @@ def analyze_with_claude(city_key: str,
                         edges: list[dict] | None = None,
                         max_edges: int = 6) -> dict | None:
     """
-    Send data to Claude Opus 4.5 with extended thinking for analysis.
+    Send data to Claude Opus 5 with adaptive thinking for analysis.
     Returns parsed JSON recommendations or None on failure.
     """
     if _CLAUDE_DISABLED:
@@ -778,27 +804,30 @@ def analyze_with_claude(city_key: str,
         except TypeError:
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         use_max_tokens = CLAUDE_MAX_TOKENS if prompt_mode != "compact" else CLAUDE_MAX_TOKENS_COMPACT
-        use_thinking_budget = CLAUDE_THINKING_BUDGET if prompt_mode != "compact" else CLAUDE_THINKING_BUDGET_COMPACT
-        response = client.messages.create(
+        use_effort = CLAUDE_EFFORT if prompt_mode != "compact" else CLAUDE_EFFORT_COMPACT
+        # Stream rather than block: at "max" effort a 64k-token turn can run
+        # past the SDK's 600s read timeout on a plain create() call.
+        with client.messages.stream(
             model=CLAUDE_MODEL,
             max_tokens=use_max_tokens,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": use_thinking_budget,
-            },
+            thinking={"type": "adaptive", "display": CLAUDE_THINKING_DISPLAY},
+            output_config={"effort": use_effort},
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            response = stream.get_final_message()
 
         # Extract text from response
         result_text = ""
         thinking_text = ""
+        # Accumulate: adaptive thinking can emit several thinking/text blocks,
+        # so overwriting would keep only the last fragment.
         for block in response.content:
             if block.type == "thinking":
-                thinking_text = block.thinking
+                thinking_text += block.thinking
             elif block.type == "text":
-                result_text = block.text
+                result_text += block.text
 
-        log.info(f"Claude thinking length: {len(thinking_text)} chars")
+        _log_completion(response, thinking_text, result_text, scope="")
 
         parsed = _extract_first_json(result_text)
         if parsed is not None:
@@ -849,27 +878,30 @@ def analyze_with_claude_global(analysis_bundle: list[dict],
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
         use_max_tokens = CLAUDE_MAX_TOKENS if prompt_mode != "compact" else CLAUDE_MAX_TOKENS_COMPACT
-        use_thinking_budget = CLAUDE_THINKING_BUDGET if prompt_mode != "compact" else CLAUDE_THINKING_BUDGET_COMPACT
+        use_effort = CLAUDE_EFFORT if prompt_mode != "compact" else CLAUDE_EFFORT_COMPACT
 
-        response = client.messages.create(
+        # Stream rather than block: at "max" effort a 64k-token turn can run
+        # past the SDK's 600s read timeout on a plain create() call.
+        with client.messages.stream(
             model=CLAUDE_MODEL,
             max_tokens=use_max_tokens,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": use_thinking_budget,
-            },
+            thinking={"type": "adaptive", "display": CLAUDE_THINKING_DISPLAY},
+            output_config={"effort": use_effort},
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            response = stream.get_final_message()
 
         result_text = ""
         thinking_text = ""
+        # Accumulate: adaptive thinking can emit several thinking/text blocks,
+        # so overwriting would keep only the last fragment.
         for block in response.content:
             if block.type == "thinking":
-                thinking_text = block.thinking
+                thinking_text += block.thinking
             elif block.type == "text":
-                result_text = block.text
+                result_text += block.text
 
-        log.info(f"Claude thinking length (global): {len(thinking_text)} chars")
+        _log_completion(response, thinking_text, result_text, scope=" (global)")
 
         parsed = _extract_first_json(result_text)
         if parsed is not None:

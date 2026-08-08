@@ -17,15 +17,24 @@ KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 # === CLAUDE AI ===
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or "YOUR_ANTHROPIC_API_KEY"
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-6")
-CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "16000"))
-CLAUDE_THINKING_BUDGET = int(os.environ.get("CLAUDE_THINKING_BUDGET", "10000"))
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5")
+# max_tokens caps thinking AND the JSON answer together. At "max" effort the
+# model can spend most of the budget reasoning, so this must be generous or the
+# trade JSON gets truncated and _extract_first_json() silently fails.
+CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "128000"))
+# Opus 5 uses adaptive thinking: it decides per-turn whether to reason, and how
+# deeply, guided by effort. Valid: "low", "medium", "high", "xhigh", "max".
+# API default is "high"; "max" is the strongest.
+CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "max")
+# "summarized" returns thinking blocks so we can log/store the reasoning.
+# The API default is "omitted", which would make our thinking capture always empty.
+CLAUDE_THINKING_DISPLAY = os.environ.get("CLAUDE_THINKING_DISPLAY", "summarized")
 # Set to 0 to disable the explicit client timeout (wait as long as needed).
 CLAUDE_TIMEOUT_SECONDS = float(os.environ.get("CLAUDE_TIMEOUT_SECONDS", "0"))
 CLAUDE_MAX_RETRIES = int(os.environ.get("CLAUDE_MAX_RETRIES", "0"))
-# Compact prompt budgets (faster; still uses extended thinking)
-CLAUDE_MAX_TOKENS_COMPACT = int(os.environ.get("CLAUDE_MAX_TOKENS_COMPACT", "4000"))
-CLAUDE_THINKING_BUDGET_COMPACT = int(os.environ.get("CLAUDE_THINKING_BUDGET_COMPACT", "4000"))
+# Compact prompt budgets (faster, lower effort)
+CLAUDE_MAX_TOKENS_COMPACT = int(os.environ.get("CLAUDE_MAX_TOKENS_COMPACT", "32000"))
+CLAUDE_EFFORT_COMPACT = os.environ.get("CLAUDE_EFFORT_COMPACT", "high")
 
 # === OPENAI ===
 # The OpenAI SDK reads API keys from the OPENAI_API_KEY environment variable by default.

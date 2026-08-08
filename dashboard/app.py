@@ -55,29 +55,79 @@ def load_data():
     return df, weather
 
 
-df, weather = load_data()
+df_all, weather = load_data()
+
+# ===========================================================================
+# STRATEGY ERAS
+# The rules changed on 2026-05-24. Blending the two periods into one number
+# hides that the conservative rules behave differently from the original ones.
+# ===========================================================================
+RULES_CHANGE_DATE = "2026-05-24"
+ERAS = {
+    "All data (both rule sets)": lambda s: s.notna(),
+    "Original rules (Feb 10–11)": lambda s: s < RULES_CHANGE_DATE,
+    f"Conservative rules ({RULES_CHANGE_DATE} onward)": lambda s: s >= RULES_CHANGE_DATE,
+}
+
+st.sidebar.header("Filters")
+era = st.sidebar.radio("Strategy era", list(ERAS.keys()), index=0)
+st.sidebar.caption(
+    "The trading rules were rewritten on "
+    f"{RULES_CHANGE_DATE} after analysing the original results. "
+    "94% of all trades come from the first two days, so the blended "
+    "numbers are dominated by the original rule set."
+)
+START_BANKROLL = st.sidebar.number_input(
+    "Simulated starting bankroll ($)", min_value=100, max_value=100_000,
+    value=1000, step=100,
+)
+
+_mask = ERAS[era](df_all["contract_date"])
+df = df_all[_mask].copy()
 trades = df[df["is_actionable"] & df["pnl_cents"].notna()].copy()
+
+if trades.empty:
+    st.warning(f"No scored trades in this era yet ({era}).")
+    st.stop()
 
 # ===========================================================================
 # HEADER
 # ===========================================================================
 st.title("Kalshi Weather Bot — Performance Analytics")
+st.warning(
+    "**Paper trading only — no real money has ever been placed by this system.** "
+    "Every trade below is a recommendation the bot logged *before* the outcome was "
+    "known, then scored against what actually happened. P&L assumes 1 contract per "
+    "trade unless the bankroll simulation below says otherwise.",
+    icon="📄",
+)
 _dates = sorted(df["contract_date"].dropna().unique())
 _date_range = f"{_dates[0]} to {_dates[-1]}" if len(_dates) > 1 else (_dates[0] if _dates else "N/A")
 _n_cities = df["city"].nunique()
 st.markdown(
     f"Post-deployment analysis of **{len(df):,} contract evaluations** and "
-    f"**{len(trades)} executed trades** across {_n_cities} cities ({_date_range})."
+    f"**{len(trades)} simulated paper trades** across {_n_cities} cities ({_date_range})."
 )
+if era.startswith("All data"):
+    st.caption(
+        "⚠️ Showing both rule sets blended. Use the sidebar to view either era on its own."
+    )
 
 # ===========================================================================
 # TOP-LEVEL KPIs
 # ===========================================================================
+_stake = trades["market_price"].sum()
+_roi = (trades["pnl_cents"].sum() / _stake * 100) if _stake else 0.0
+
 k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Total Trades", f"{len(trades)}")
-k2.metric("Win Rate", f"{trades['prediction_correct'].mean():.1%}")
-k3.metric("Total P&L", f"${trades['pnl_cents'].sum()/100:.2f}")
-k4.metric("Avg P&L/Trade", f"{trades['pnl_cents'].mean():.1f}¢")
+k1.metric("Paper Trades", f"{len(trades)}")
+k2.metric("Win Rate", f"{trades['prediction_correct'].mean():.1%}",
+          help="Wins ÷ trades. On its own this says nothing about profit — "
+               "a contract bought at 70¢ needs a 70% win rate just to break even.")
+k3.metric("Simulated P&L", f"${trades['pnl_cents'].sum()/100:.2f}")
+k4.metric("Return on Stake", f"{_roi:+.2f}%",
+          help=f"P&L ÷ total staked (${_stake/100:,.2f}). The honest profitability "
+               "measure — it accounts for how much was risked, which win rate ignores.")
 k5.metric("Contracts Evaluated", f"{len(df):,}")
 
 st.divider()
@@ -380,6 +430,127 @@ st.plotly_chart(fig9, use_container_width=True)
 st.divider()
 
 # ===========================================================================
+# ROW 6: Why win rate misleads + bankroll simulation
+# ===========================================================================
+c1, c2 = st.columns(2)
+
+with c1:
+    st.subheader("Win Rate vs. Breakeven by City")
+    st.caption("A contract bought at 70¢ needs a 70% win rate just to break even")
+
+    be = trades.groupby("city").agg(
+        win_rate=("prediction_correct", "mean"),
+        breakeven=("market_price", "mean"),
+        pnl=("pnl_cents", "sum"),
+        n=("pnl_cents", "size"),
+    ).reset_index()
+    be["win_rate"] *= 100
+    be["gap"] = be["win_rate"] - be["breakeven"]
+    be = be.sort_values("gap")
+
+    fig10 = go.Figure()
+    fig10.add_trace(go.Bar(
+        x=be["city"], y=be["win_rate"], name="Actual win rate",
+        marker_color="#636EFA",
+    ))
+    fig10.add_trace(go.Scatter(
+        x=be["city"], y=be["breakeven"], name="Breakeven needed",
+        mode="markers", marker=dict(size=14, symbol="diamond", color="#EF553B"),
+    ))
+    fig10.update_layout(
+        height=400, margin=dict(t=10), yaxis_title="%",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    st.plotly_chart(fig10, use_container_width=True)
+
+    _corr = be["gap"].corr(be["pnl"]) if len(be) > 2 else float("nan")
+    st.caption(
+        "Bar **below** the diamond ⇒ the city lost money regardless of how often it won. "
+        f"Correlation between (win rate − breakeven) and P&L: **{_corr:.3f}**."
+    )
+
+with c2:
+    st.subheader(f"Bankroll Simulation — ${START_BANKROLL:,} start")
+    st.caption("Applies the bot's own Kelly fractions instead of a flat 1 contract")
+
+    sim = trades.dropna(subset=["kelly_fraction", "market_price", "pnl_cents"]).copy()
+    sim = sim.sort_values("contract_date")
+
+    bankroll = float(START_BANKROLL)
+    curve, peak, max_dd = [], float(START_BANKROLL), 0.0
+    bankrupt_on = None
+
+    # Trades on the same day are concurrent, so they all size off the bankroll
+    # as it stood at the start of that day. Critically, the day's total stake is
+    # capped at the bankroll — Kelly fractions are derived per-trade and summing
+    # them across 186 same-day trades would imply ~10x leverage, which no real
+    # account can take. When the desired stakes exceed cash, every position is
+    # scaled down proportionally.
+    for date, day in sim.groupby("contract_date", sort=True):
+        day_start = bankroll
+        rows = []
+        for _, r in day.iterrows():
+            price = r["market_price"] / 100.0          # cost per contract, $
+            stake = day_start * float(r["kelly_fraction"])
+            if price > 0 and stake > 0:
+                rows.append((price, stake, r["pnl_cents"] / 100.0))
+
+        desired = sum(s for _, s, _ in rows)
+        scale = min(1.0, day_start / desired) if desired > day_start else 1.0
+
+        day_pnl = 0.0
+        for price, stake, pnl_per in rows:
+            qty = int((stake * scale) // price)        # whole contracts only
+            if qty >= 1:
+                day_pnl += qty * pnl_per
+
+        bankroll += day_pnl
+        peak = max(peak, bankroll)
+        max_dd = max(max_dd, (peak - bankroll) / peak * 100 if peak else 0)
+        curve.append({"date": date, "bankroll": max(bankroll, 0.0)})
+
+        if bankroll <= 0:                              # wiped out — stop trading
+            bankrupt_on, bankroll = date, 0.0
+            break
+
+    curve_df = pd.DataFrame(curve)
+    if curve_df.empty:
+        st.info("Not enough sized trades in this era to simulate a bankroll.")
+    else:
+        fig11 = go.Figure()
+        fig11.add_trace(go.Scatter(
+            x=curve_df["date"], y=curve_df["bankroll"],
+            mode="lines+markers", name="Bankroll",
+            line=dict(color="#00CC96", width=2),
+        ))
+        fig11.add_hline(y=START_BANKROLL, line_dash="dash", line_color="gray",
+                        annotation_text=f"${START_BANKROLL:,} start")
+        fig11.update_layout(height=400, margin=dict(t=10), yaxis_title="Bankroll ($)")
+        st.plotly_chart(fig11, use_container_width=True)
+
+        final = curve_df["bankroll"].iloc[-1]
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Final", f"${final:,.2f}", f"{(final/START_BANKROLL-1)*100:+.1f}%")
+        m2.metric("Max Drawdown", f"{max_dd:.1f}%")
+        m3.metric("Trading Days", f"{len(curve_df)}")
+        if bankrupt_on:
+            st.error(
+                f"**Account wiped out on {bankrupt_on}.** Position sizing staked more "
+                "than the edge could support. The flat 1-contract P&L hides this "
+                "entirely — same trades, same win rate, but sized against a real "
+                "bankroll the account does not survive."
+            )
+
+st.caption(
+    "**Simulation caveats:** fills are assumed at the logged price with no slippage "
+    "and no fees, and size is not checked against the order book — a Kelly stake can "
+    "imply more contracts than were actually offered at that price. Treat the curve "
+    "as an upper bound, not a forecast."
+)
+
+st.divider()
+
+# ===========================================================================
 # RAW DATA TABLE
 # ===========================================================================
 with st.expander("📋 View All Trades (raw data)"):
@@ -399,7 +570,9 @@ with st.expander("📋 View All Trades (raw data)"):
 # ===========================================================================
 st.divider()
 st.caption(
-    f"Data: {len(df):,} contract evaluations from an automated Kalshi weather derivatives trading bot. "
-    f"Actual weather outcomes sourced from Iowa Environmental Mesonet (ASOS/METAR). "
+    f"Data: {len(df):,} contract evaluations from an automated Kalshi weather derivatives trading bot "
+    f"running in **paper-trading mode — no real capital has been deployed by this system.** "
+    f"Every recommendation is logged before the outcome is known, then scored against the "
+    f"actual settlement. Weather outcomes sourced from Iowa Environmental Mesonet (ASOS/METAR). "
     f"Analysis covers {_date_range} across {', '.join(sorted(df['city'].unique()))}."
 )

@@ -48,7 +48,7 @@ By the time the data pipeline was "done" I had 5 API integrations and the codeba
 
 I'm an Applied Math major, not a meteorologist. So I added Claude AI (Anthropic's model) as a decision-making layer. The idea was: feed the model all the weather data, market prices, risk flags, and forecast context, and let it make holistic trade/no-trade decisions.
 
-I built a prompt system that constructs a detailed weather briefing for each city — current observations, forecast high, ensemble model spread, uncertainty estimates, hours remaining until settlement, historical forecast error — and sends it all to Claude with extended thinking (10,000 token budget). The model analyzes everything and outputs structured trade recommendations.
+I built a prompt system that constructs a detailed weather briefing for each city — current observations, forecast high, ensemble model spread, uncertainty estimates, hours remaining until settlement, historical forecast error — and sends it all to Claude Opus 5 with adaptive thinking at maximum reasoning effort. The model analyzes everything and outputs structured trade recommendations.
 
 This was the "LLM-first" profile. Let the AI decide everything. Remove the statistical gates. Trust the model.
 
